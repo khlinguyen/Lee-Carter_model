@@ -1,0 +1,183 @@
+```{r}
+library(readr)
+library(tibble)
+library(stringr)
+library(dplyr)
+
+import_data = function(path){
+  data = read_delim(path, delim = ' ', skip = 2)
+  names(data) = str_replace_all(names(data), " ", "")
+  data = mutate_at(data,vars(Year,Age,lx,dx,Lx,Tx),.funs = list(~as.integer(.)))
+  data = mutate_at(data,vars(mx,qx,ax,ex),.funs = list(~as.double(.)))
+} 
+
+```
+```{r}
+path_esp_m = "./LIFE_TABLES/lt_male/mltper_1x1/ESP.mltper_1x1.txt"
+path_esp_f = "./LIFE_TABLES/lt_female/fltper_1x1/ESP.fltper_1x1.txt"
+data_esp_m = import_data(path_esp_m)
+data_esp_f = import_data(path_esp_f)
+
+path_swe_m = "./LIFE_TABLES/lt_male/mltper_1x1/SWE.mltper_1x1.txt"
+path_swe_f = "./LIFE_TABLES/lt_female/fltper_1x1/SWE.fltper_1x1.txt"
+data_swe_m = import_data(path_swe_m)
+data_swe_f = import_data(path_swe_f)
+
+```
+```{r}
+library(tidyr)
+rex <- function(mx, age){
+  sum(cumprod(1 - mx[(age+1):length(mx)]))
+}
+
+life_expectancy_table = function(lt)
+{
+  lt %>%
+    select(Year, Age, mx, mx_lc) %>%
+    group_by(Year) %>%
+    summarise(mx_list = list(mx),mx_lc_list = list(mx_lc))%>%
+    inner_join(lt[c("Age","Year")],c("Year"))%>%
+    group_by(Year, Age) %>%
+    summarise(ex = rex(unlist(mx_list),Age),ex_lc = rex(unlist(mx_lc_list),Age))%>%
+    arrange(Year) -> lt
+  return (lt)
+}
+
+```
+```{r}
+library(tidyr)
+
+k_forcast = function(k,annee){
+  #res = tail(k,1)
+  #d = (tail(k,1) - k[1])/length(k)
+  #for(i in (1:(annee-1985))){
+  #   res = res + d + rnorm(1, 0, 0.5)
+  #}
+  #return (as.numeric(res))
+  reg_lin = lm(k~c(1915:1985))
+  intercept = reg_lin$coefficients[1]
+  pente = reg_lin$coefficients[2]
+  plot(k~c(1915:1985), xlab="Year", main= paste("k =",round(pente,2),"*t +",round(intercept,0)))
+  abline(reg_lin, col="blue")
+  k_predict = annee * pente + intercept
+  return (k_predict)
+  
+}
+
+lc = function(data,annee){
+  data_lc = select(data,Year,Age,mx)
+  data_lc = filter(data_lc, Year %in% c(1915:1985))
+  data_lc =pivot_wider(data_lc,names_from = "Age", values_from = "mx")
+  data_lc =  data.frame(data_lc[,1],apply(data_lc[,-c(1,112)],MARGIN = 2,FUN = log))
+  #calculer a_x
+  a = colMeans(data_lc[,-1])
+  #calculer b_x
+  Z = data_lc[,-1]
+  for (j in 1:110){
+    Z[,j] = Z[,j] - a[j]
+  }
+  
+  d = svd(Z, 1, 1)
+  b = d$v/sum(d$v)
+  #calculer k_t
+  k = d$u * sum(d$v) * d$d[1]
+
+  m_x = exp(a+b*k_forcast(k, annee))
+  mx_lc = data.frame(mx_lc = m_x)
+  res_lc = filter(data,Year == annee)
+  res_lc = select(res_lc,Age,mx)
+  res_lc = res_lc[-111,]
+  res_lc = cbind(res_lc,mx_lc)
+  return (res_lc)
+ } 
+#### Calculer k par régression linéaire ####
+#reg_lin = lm(k~c(1933:1995))
+#intercept = reg_lin$coefficients[1]
+#pente = reg_lin$coefficients[2]
+#k_forcast2 = function(annee){
+#k = annee * pente + intercept
+#}
+# m_x = exp(a+b*k_forcast2(1987))
+
+
+lc_by_year = function(data,annee1, annee2){
+data1 = lc(data,annee1)
+data1['Year'] = annee1
+data2 = lc(data,annee2)
+data2['Year'] = annee2
+data_lc = rbind(data1,data2)
+return(data_lc)
+}
+
+data_lc_ef = lc_by_year(data_esp_f,2000,2010)
+data_lc_em = lc_by_year(data_esp_m,2000,2010)
+data_lc_sf = lc_by_year(data_swe_f,2000,2010)
+data_lc_sm = lc_by_year(data_swe_m,2000,2010)
+
+
+```
+```{r}
+# Graphique
+library(ggplot2)
+plot_lc = function(country,gender,data){
+  p = ggplot(mapping=aes(x = Age)) + 
+    geom_point(aes(y = mx, color = "Observation")) + 
+    geom_point(aes(y = mx_lc, color = "Prediction")) +
+    labs(color = "Legend")+
+    ylab("Mortality quotient")+
+    ggtitle(paste("Predictions of mortality quotient using Lee Carter model for",country,"(",gender,")"))+
+    facet_wrap(~Year)+
+    scale_y_log10()
+  p %+% data
+}
+
+plot_lc("Spain","Male",data_lc_em)
+plot_lc("Spain","Female",data_lc_ef)
+plot_lc("Sweden","Female",data_lc_sf)
+plot_lc("Sweden","Male",data_lc_sm)
+
+```
+```{r}
+plot_lc = function(country,gender,data){
+  legend_title = "Legend"
+  p = ggplot(mapping=aes(x = Age)) + 
+    geom_point(aes(y = ex, color = "Observation")) + 
+    geom_point(aes(y = ex_lc, color = "Prediction")) +
+    labs(color = "Legend")+
+    ylab(" Life expectancy")+
+    ggtitle(paste("Predictions of life expectancy using Lee Carter model for",country,"(",gender,")"))+
+    facet_wrap(~Year)+
+    scale_y_log10()
+  p %+% data
+}
+
+plot_lc("Spain","Male",life_expectancy_table(data_lc_em))
+plot_lc("Spain","Female",life_expectancy_table(data_lc_ef))
+plot_lc("Sweden","Male",life_expectancy_table(data_lc_sm))
+plot_lc("Sweden","Female",life_expectancy_table(data_lc_sf))
+```
+```{r}
+# Graphique
+library(ggplot2)
+p = ggplot(mapping=aes(x = Age)) + 
+    geom_point(aes(y = mx, color = "Spain")) + 
+    geom_point(aes(y = mx_swe, color = "Sweden")) +
+    labs(color = "Legend")+
+    ylab("Mortality quotient")+
+    ggtitle("Comparison of mortality quotient between Spain and Sweden in 1918")+
+    facet_wrap(~Year)+
+    scale_y_log10()
+
+
+
+data_esp_m %>%
+  select(Year, mx, Age)%>%
+  filter(Year == 1918) -> data_esm_18
+data_swe_m %>%
+  filter(Year == 1918) %>%
+  select(mx) -> data_esm_18['mx_swe']
+
+p %+% drop_na(data_esm_18)
+
+
+```
